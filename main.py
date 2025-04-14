@@ -1,46 +1,41 @@
-import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
-from pathlib import Path
-from model import DeepTTG
-import metrics
-from datetime import datetime
+# test_model.py
 import torch
+import torch.nn as nn
 from torch_geometric.loader import DataLoader
 from dataset import TestbedDataset
-from tqdm import tqdm
+import metrics
 import numpy as np
 from torch.cuda.amp import GradScaler, autocast
+import argparse
+import os
+from tqdm import tqdm
+from datetime import datetime
 
-def train(model, device, train_loader, optimizer,loss_fn):
-    print('Training on {} samples...'.format(len(train_loader.dataset)))
-    model.train()
-    for batch_idx, data in enumerate(train_loader):
-        data = data.to(device)
-        optimizer.zero_grad()
-
-
-
-
-        with autocast():
-            output = model(data)
-            loss = loss_fn(output, data.y.view(-1, 1).float().to(device))
-        # break
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+# Import original and improved models
+from model import DeepTTG
+from improvedmodel import ImprovedDeepTTG, create_dataset_subset
 
 
-
-def test(model: nn.Module, test_loader, loss_function, device, show):
+def test(model, test_loader, loss_function, device, show=True):
+    """Evaluate model performance on a data loader"""
     model.eval()
     test_loss = 0
     outputs = []
     targets = []
+
     with torch.no_grad():
-        for batch_idx, data in tqdm(enumerate(test_loader), disable=not show, total=len(test_loader)):
+        for batch_idx, data in tqdm(
+            enumerate(test_loader), disable=not show, total=len(test_loader)
+        ):
             data = data.to(device)
             y = data.y
-            y_hat,_,_ = model(data)
+
+            # Handle both model types - original and improved
+            if isinstance(model, ImprovedDeepTTG):
+                y_hat, _, _ = model(data)
+            else:
+                y_hat = model(data)
+
             test_loss += loss_function(y_hat.view(-1), y.view(-1)).item()
             outputs.append(y_hat.cpu().numpy().reshape(-1))
             targets.append(y.cpu().numpy().reshape(-1))
@@ -51,79 +46,153 @@ def test(model: nn.Module, test_loader, loss_function, device, show):
     test_loss /= len(test_loader.dataset)
 
     evaluation = {
-        'loss': test_loss,
-        'c_index': metrics.c_index(targets, outputs),
-        'RMSE': metrics.RMSE(targets, outputs),
-        'MAE': metrics.MAE(targets, outputs),
-        'SD': metrics.SD(targets, outputs),
-        'CORR': metrics.CORR(targets, outputs),
+        "loss": test_loss,
+        "c_index": metrics.c_index(targets, outputs),
+        "RMSE": metrics.RMSE(targets, outputs),
+        "MAE": metrics.MAE(targets, outputs),
+        "SD": metrics.SD(targets, outputs),
+        "CORR": metrics.CORR(targets, outputs),
     }
 
     return evaluation
 
 
+def main():
+    parser = argparse.ArgumentParser(description="Test DeepTGIN models")
+    parser.add_argument(
+        "--model",
+        type=str,
+        choices=["original", "improved"],
+        default="improved",
+        help="Model type to evaluate",
+    )
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument(
+        "--subset",
+        type=float,
+        default=0.8,
+        help="Fraction of dataset to use (for quick testing)",
+    )
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=5, help="Number of epochs")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device to use",
+    )
+    args = parser.parse_args()
 
+    device = torch.device(args.device)
+    print(f"Using device: {device}")
 
+    # Create data loaders with subset for quick testing
+    datasets = {}
+    data_loaders = {}
 
+    for phase_name in ["train", "val", "test2016", "test2013"]:
+        print(f"Loading {phase_name} dataset...")
+        dataset = TestbedDataset(root="data", dataset=phase_name)
 
+        # Create subset for quicker testing
+        if args.subset < 1.0:
+            subset = create_dataset_subset(dataset, fraction=args.subset)
+            print(f"Created subset of {len(subset)} samples from {len(dataset)} total")
+            datasets[phase_name] = subset
+        else:
+            datasets[phase_name] = dataset
 
+        data_loaders[phase_name] = DataLoader(
+            datasets[phase_name],
+            batch_size=args.batch_size,
+            pin_memory=True,
+            shuffle=(phase_name == "train"),
+        )
 
+    # Initialize model based on selection
+    if args.model == "original":
+        print("Using original DeepTTG model")
+        model = DeepTTG().to(device)
+    else:
+        print("Using improved ImprovedDeepTTG model")
+        model = ImprovedDeepTTG().to(device)
 
+    # Loss function and optimizer
+    loss_fn = nn.MSELoss(reduction="sum")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-scaler = GradScaler()
-torch.backends.cudnn.enable =True
-torch.backends.cudnn.benchmark = True
+    # Gradient scaler for mixed precision
+    scaler = GradScaler()
 
-model = DeepTTG().to("cuda")
-device = torch.device("cuda")
-loss_fn = nn.MSELoss(reduction='sum')
-optimizer = torch.optim.AdamW(model.parameters(),lr=0.001)
-data_loaders = {phase_name:
-                DataLoader(TestbedDataset(root='data', dataset=phase_name),
-                           batch_size=96,
-                           pin_memory=True,
-                           shuffle=True)
-            for phase_name in ['train', 'val', 'test2016','test2013']}
+    # Training loop
+    print(f"Starting training for {args.epochs} epochs")
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        epoch_loss = 0
 
-path = Path(f'result/DeepTTG_{datetime.now()}_{seed}')
-writer = SummaryWriter(path)
-NUM_EPOCHS = 100
-save_best_epoch=80
-best_val_loss = 100000000
-best_epoch = -1
+        print(f"Epoch {epoch}/{args.epochs}")
+        for batch_idx, data in enumerate(tqdm(data_loaders["train"], desc="Training")):
+            data = data.to(device)
+            optimizer.zero_grad()
 
-start = datetime.now()
-print('start at ', start)
+            with autocast():
+                if args.model == "original":
+                    output = model(data)
+                    loss = loss_fn(output, data.y.view(-1, 1).float().to(device))
+                else:
+                    output, _, _ = model(data)
+                    loss = loss_fn(output, data.y.view(-1, 1).float().to(device))
 
-for epoch in range(1,NUM_EPOCHS+1):
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
-    train(model, device, data_loaders['train'], optimizer, loss_fn)
-    # break
-    for _p in [ 'val', 'test2016','test2013']:
-        performance = test(model, data_loaders[_p], loss_fn, device, False)
-        for i in performance:
-            writer.add_scalar(f'{_p} {i}', performance[i], global_step=epoch)
-        if _p == 'val' and epoch >= save_best_epoch and performance['loss'] < best_val_loss:
-            best_val_loss = performance['loss']
-            best_epoch = epoch
-            torch.save(model.state_dict(), path / 'best_model.pt')
+            epoch_loss += loss.item()
 
+            # Print progress for larger batches
+            if (batch_idx + 1) % 10 == 0:
+                print(f"Batch {batch_idx+1}, Loss: {loss.item()/len(data):.6f}")
 
-model.load_state_dict(torch.load(path / 'best_model.pt'))
-with open(path / 'result.txt', 'w') as f:
-    f.write(f'best model found at epoch NO.{best_epoch}\n')
-    for _p in ['train', 'val', 'test2016','test2013']:
-        performance = test(model, data_loaders[_p], loss_fn, device, True)
-        f.write(f'{_p}:\n')
-        print(f'{_p}:')
+        # Report epoch loss
+        epoch_loss /= len(data_loaders["train"].dataset)
+        print(f"Epoch {epoch} training loss: {epoch_loss:.6f}")
+
+        # Evaluate on validation set
+        print("Evaluating on validation set...")
+        val_metrics = test(model, data_loaders["val"], loss_fn, device)
+        print(f"Validation metrics: {val_metrics}")
+
+    # Final evaluation on test sets
+    print("\n=== FINAL EVALUATION ===")
+    results = {}
+
+    for phase_name in ["train", "val", "test2016", "test2013"]:
+        print(f"\nEvaluating on {phase_name} set:")
+        performance = test(model, data_loaders[phase_name], loss_fn, device)
+        results[phase_name] = performance
+
+        print(f"{phase_name} results:")
         for k, v in performance.items():
-            f.write(f'{k}: {v}\n')
-            print(f'{k}: {v}\n')
-        f.write('\n')
-        print()
+            print(f"{k}: {v:.6f}")
 
-print('train finished')
+    # Save results to file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    result_dir = f"result/evaluation_{args.model}_{timestamp}"
+    os.makedirs(result_dir, exist_ok=True)
 
-end = datetime.now()
-print('end at:', end)
-print('time used:', str(end - start))
+    with open(f"{result_dir}/results.txt", "w") as f:
+        f.write(f"Model: {args.model}\n")
+        f.write(f"Subset fraction: {args.subset}\n")
+        f.write(f"Training epochs: {args.epochs}\n\n")
+
+        for phase_name, performance in results.items():
+            f.write(f"{phase_name}:\n")
+            for k, v in performance.items():
+                f.write(f"{k}: {v:.6f}\n")
+            f.write("\n")
+
+    print(f"\nResults saved to {result_dir}/results.txt")
+
+
+if __name__ == "__main__":
+    main()

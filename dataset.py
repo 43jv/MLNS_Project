@@ -9,30 +9,44 @@ from tqdm import tqdm
 
 
 class TestbedDataset(InMemoryDataset):
-    def __init__(self, root=None, dataset=None,
-                 pro=None, poc=None,y=None, transform=None,
-                 pre_transform=None,smile_graph=None):
-
+    def __init__(
+        self,
+        root=None,
+        dataset=None,
+        pro=None,
+        poc=None,
+        y=None,
+        transform=None,
+        pre_transform=None,
+        smile_graph=None,
+    ):
 
         super(TestbedDataset, self).__init__(root, transform, pre_transform)
 
         self.dataset = dataset
         if os.path.isfile(self.processed_paths[0]):
-            print('Pre-processed data found: {}, loading ...'.format(self.processed_paths[0]))
+            print(
+                "Pre-processed data found: {}, loading ...".format(
+                    self.processed_paths[0]
+                )
+            )
             self.data, self.slices = torch.load(self.processed_paths[0])
         else:
-            print('Pre-processed data {} not found, doing pre-processing...'.format(self.processed_paths[0]))
-            self.process(pro, poc,y,smile_graph)
+            print(
+                "Pre-processed data {} not found, doing pre-processing...".format(
+                    self.processed_paths[0]
+                )
+            )
+            self.process(pro, poc, y, smile_graph)
             self.data, self.slices = torch.load(self.processed_paths[0])
 
     @property
     def raw_file_names(self):
         pass
 
-
     @property
     def processed_file_names(self):
-        return [self.dataset + '.pt']
+        return [self.dataset + ".pt"]
 
     def download(self):
 
@@ -45,8 +59,7 @@ class TestbedDataset(InMemoryDataset):
         if not os.path.exists(self.processed_dir):
             os.makedirs(self.processed_dir)
 
-
-    def process(self, pro, poc, y,smile_graph):
+    def process(self, pro, poc, y, smile_graph):
 
         data_list = []
 
@@ -58,10 +71,12 @@ class TestbedDataset(InMemoryDataset):
 
             c_size, features, edge_index = smile_graph[name]
             # make the graph ready for PyTorch Geometrics GCN algorithms:
-            GCNData = DATA.Data(x=torch.Tensor(features),
-                                edge_index=torch.LongTensor(edge_index).transpose(0,1),
-                                y=torch.FloatTensor([labels]))
-            GCNData.__setitem__('c_size', torch.LongTensor([c_size]))
+            GCNData = DATA.Data(
+                x=torch.Tensor(features),
+                edge_index=torch.LongTensor(edge_index).transpose(0, 1),
+                y=torch.FloatTensor([labels]),
+            )
+            GCNData.__setitem__("c_size", torch.LongTensor([c_size]))
             GCNData.protein = torch.LongTensor([protein])
             GCNData.pocket = torch.LongTensor([pocket])
 
@@ -74,9 +89,8 @@ class TestbedDataset(InMemoryDataset):
 
         if self.pre_transform is not None:
             data_list = [self.pre_transform(data) for data in data_list]
-        print('Graph construction done. Saving to file.')
+        print("Graph construction done. Saving to file.")
         # print(data_list)
         data, slices = self.collate(data_list)
         # save preprocessed data:
         torch.save((data, slices), self.processed_paths[0])
-

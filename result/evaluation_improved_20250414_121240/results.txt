@@ -1,0 +1,36 @@
+Model: improved
+Subset fraction: 0.2
+Training epochs: 5
+
+train:
+loss: 2.327854
+c_index: 0.724824
+RMSE: 1.525731
+MAE: 1.213683
+SD: 1.452175
+CORR: 0.621605
+
+val:
+loss: 2.521413
+c_index: 0.715531
+RMSE: 1.587896
+MAE: 1.263140
+SD: 1.526486
+CORR: 0.592665
+
+test2016:
+loss: 3.383478
+c_index: 0.689698
+RMSE: 1.839423
+MAE: 1.484263
+SD: 1.714123
+CORR: 0.565565
+
+test2013:
+loss: 3.464237
+c_index: 0.715832
+RMSE: 1.861246
+MAE: 1.597107
+SD: 1.820910
+CORR: 0.665629
+
