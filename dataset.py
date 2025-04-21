@@ -1,96 +1,110 @@
 import os
-import numpy as np
-from math import sqrt
-from scipy import stats
-from torch_geometric.data import InMemoryDataset, DataLoader
-from torch_geometric import data as DATA
 import torch
+import requests
+import numpy as np
+from Bio.PDB import PDBParser
+from torch_geometric.data import InMemoryDataset, Data
+from torch_geometric import data as DATA
 from tqdm import tqdm
 
 
 class TestbedDataset(InMemoryDataset):
     def __init__(
         self,
-        root=None,
-        dataset=None,
-        pro=None,
-        poc=None,
-        y=None,
+        root,
+        dataset,
+        pro,
+        poc,
+        y,
+        smile_graph,
         transform=None,
         pre_transform=None,
-        smile_graph=None,
     ):
-
-        super(TestbedDataset, self).__init__(root, transform, pre_transform)
-
+        super().__init__(root, transform, pre_transform)
         self.dataset = dataset
+        self.pro = pro
+        self.poc = poc
+        self.y = y
+        self.smile_graph = smile_graph
+
+        # download raw PDBs if missing
+        if not os.path.isdir(self.raw_dir):
+            self.download()
+
+        # load or process
         if os.path.isfile(self.processed_paths[0]):
-            print(
-                "Pre-processed data found: {}, loading ...".format(
-                    self.processed_paths[0]
-                )
-            )
             self.data, self.slices = torch.load(self.processed_paths[0])
         else:
-            print(
-                "Pre-processed data {} not found, doing pre-processing...".format(
-                    self.processed_paths[0]
-                )
-            )
-            self.process(pro, poc, y, smile_graph)
+            os.makedirs(self.processed_dir, exist_ok=True)
+            self.process()
             self.data, self.slices = torch.load(self.processed_paths[0])
 
     @property
     def raw_file_names(self):
-        pass
+        # we save each PDB as <pdbid>.pdb in raw_dir
+        return [f"{name}.pdb" for name in self.smile_graph]
 
     @property
     def processed_file_names(self):
-        return [self.dataset + ".pt"]
+        return [f"{self.dataset}.pt"]
 
     def download(self):
+        os.makedirs(self.raw_dir, exist_ok=True)
+        for pdbid in tqdm(self.smile_graph, desc="Downloading PDBs"):
+            outpath = os.path.join(self.raw_dir, f"{pdbid}.pdb")
+            if os.path.exists(outpath):
+                continue
+            url = f"https://files.rcsb.org/download/{pdbid}.pdb"
+            r = requests.get(url)
+            r.raise_for_status()
+            with open(outpath, "w") as f:
+                f.write(r.text)
 
-        pass
-
-    def _download(self):
-        pass
-
-    def _process(self):
-        if not os.path.exists(self.processed_dir):
-            os.makedirs(self.processed_dir)
-
-    def process(self, pro, poc, y, smile_graph):
-
+    def process(self):
+        parser = PDBParser(QUIET=True)
         data_list = []
 
-        # for name in smile_graph:
-        for name in tqdm(smile_graph, desc="Processing"):
-            protein = pro[name]
-            pocket = poc[name]
-            labels = y[name]
-
-            c_size, features, edge_index = smile_graph[name]
-            # make the graph ready for PyTorch Geometrics GCN algorithms:
-            GCNData = DATA.Data(
-                x=torch.Tensor(features),
-                edge_index=torch.LongTensor(edge_index).transpose(0, 1),
-                y=torch.FloatTensor([labels]),
+        for name in tqdm(self.smile_graph, desc="Processing graphs"):
+            # --- ligand graph as before ---
+            c_size, feats, edge_idx = self.smile_graph[name]
+            ligand = DATA.Data(
+                x=torch.Tensor(feats),
+                edge_index=torch.LongTensor(edge_idx).t().contiguous(),
+                y=torch.FloatTensor([self.y[name]]),
             )
-            GCNData.__setitem__("c_size", torch.LongTensor([c_size]))
-            GCNData.protein = torch.LongTensor([protein])
-            GCNData.pocket = torch.LongTensor([pocket])
+            ligand.c_size = torch.LongTensor([c_size])
+            ligand.protein = torch.LongTensor([self.pro[name]])
+            ligand.pocket = torch.LongTensor([self.poc[name]])
+            ligand.pdbid = name
 
-            GCNData.pdbid = name
-            # append graph, label and target sequence to data list
-            data_list.append(GCNData)
+            # --- build structure graph from downloaded PDB ---
+            pdb_path = os.path.join(self.raw_dir, f"{name}.pdb")
+            coords, struct_eidx = self._build_structure_graph(parser, pdb_path)
 
-        if self.pre_filter is not None:
-            data_list = [data for data in data_list if self.pre_filter(data)]
+            ligand.prot_str_x = torch.Tensor(coords)  # [N_res,3]
+            ligand.prot_str_edge_index = torch.LongTensor(struct_eidx)  # [2, E]
 
-        if self.pre_transform is not None:
-            data_list = [self.pre_transform(data) for data in data_list]
-        print("Graph construction done. Saving to file.")
-        # print(data_list)
+            data_list.append(ligand)
+
+        if self.pre_filter:
+            data_list = [d for d in data_list if self.pre_filter(d)]
+        if self.pre_transform:
+            data_list = [self.pre_transform(d) for d in data_list]
+
         data, slices = self.collate(data_list)
-        # save preprocessed data:
         torch.save((data, slices), self.processed_paths[0])
+
+    def _build_structure_graph(self, parser, pdb_file, cutoff=8.0):
+        struct = parser.get_structure("X", pdb_file)[0]
+        coords = []
+        for chain in struct:
+            for res in chain:
+                if "CA" in res:
+                    coords.append(res["CA"].get_coord())
+        coords = np.vstack(coords)  # (N,3)
+
+        # fully connect within cutoff
+        D = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
+        src, dst = np.where((D <= cutoff) & (D > 0))
+        edge_index = np.vstack((src, dst))
+        return coords, edge_index

@@ -1,7 +1,6 @@
 import numpy as np
 import sklearn.metrics as m
 from scipy.stats import pearsonr
-
 from numba import njit
 
 
@@ -9,9 +8,8 @@ from numba import njit
 def c_index(y_true, y_pred):
     summ = 0
     pair = 0
-
     for i in range(1, len(y_true)):
-        for j in range(0, i):
+        for j in range(i):
             pair += 1
             if y_true[i] > y_true[j]:
                 summ += 1 * (y_pred[i] > y_pred[j]) + 0.5 * (y_pred[i] == y_pred[j])
@@ -19,11 +17,7 @@ def c_index(y_true, y_pred):
                 summ += 1 * (y_pred[i] < y_pred[j]) + 0.5 * (y_pred[i] == y_pred[j])
             else:
                 pair -= 1
-
-    if pair is not 0:
-        return summ / pair
-    else:
-        return 0
+    return summ / pair if pair != 0 else 0
 
 
 def RMSE(y_true, y_pred):
@@ -44,4 +38,4 @@ def SD(y_true, y_pred):
     y_pred = y_pred.reshape((-1, 1))
     lr = LinearRegression().fit(y_pred, y_true)
     y_ = lr.predict(y_pred)
-    return np.sqrt(np.square(y_true - y_).sum() / (len(y_pred) - 1))
+    return np.sqrt(((y_true - y_) ** 2).sum() / (len(y_pred) - 1))

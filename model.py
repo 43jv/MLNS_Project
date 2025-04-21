@@ -6,9 +6,7 @@ from torch.nn import Sequential, Linear, ReLU, Dropout, BatchNorm1d, Embedding
 import numpy as np
 
 
-# ---------------------------
 # Transformer Encoder Modules
-# ---------------------------
 def get_sinusoid_encoding_table(n_position, d_model):
     """Sinusoid position encoding table."""
 

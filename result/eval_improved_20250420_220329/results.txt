@@ -1,0 +1,36 @@
+Model: improved
+Subset: 0.1
+Epochs: 5
+
+train:
+  loss: 4.225892
+  c_index: 0.713486
+  RMSE: 2.055697
+  MAE: 1.670671
+  SD: 1.457929
+  CORR: 0.625467
+
+val:
+  loss: 4.631916
+  c_index: 0.696215
+  RMSE: 2.152189
+  MAE: 1.737007
+  SD: 1.613720
+  CORR: 0.604280
+
+test2016:
+  loss: 4.789067
+  c_index: 0.684350
+  RMSE: 2.188394
+  MAE: 1.771556
+  SD: 1.500928
+  CORR: 0.589851
+
+test2013:
+  loss: 4.925988
+  c_index: 0.621053
+  RMSE: 2.219457
+  MAE: 1.866142
+  SD: 2.025648
+  CORR: 0.474009
+

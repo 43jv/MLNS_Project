@@ -1,197 +1,160 @@
-# test_model.py
-import torch
-import torch.nn as nn
-from torch_geometric.loader import DataLoader
-from dataset import TestbedDataset
-import metrics
-import numpy as np
-from torch.cuda.amp import GradScaler, autocast
-import argparse
 import os
-from tqdm import tqdm
+import torch
+import argparse
+import numpy as np
 from datetime import datetime
+from tqdm import tqdm
+from torch.cuda.amp import autocast, GradScaler
+from torch_geometric.loader import DataLoader
+from torch_geometric.data import InMemoryDataset
 
-# Import original and improved models
+import metrics
 from model import DeepTTG
 from improvedmodel import ImprovedDeepTTG, create_dataset_subset
 
 
-def test(model, test_loader, loss_function, device, show=True):
-    """Evaluate model performance on a data loader"""
+class ProcessedDataset(InMemoryDataset):
+    """Load a pre-saved <split>.pt containing (data, slices)."""
+
+    def __init__(self, root, split):
+        super().__init__(root)
+        path = os.path.join(root, f"{split}.pt")
+        self.data, self.slices = torch.load(path)
+
+    @property
+    def raw_file_names(self):
+        return []
+
+    @property
+    def processed_file_names(self):
+        return []
+
+    def download(self):
+        pass
+
+    def process(self):
+        pass
+
+
+def test(model, loader, loss_fn, device, show=True):
     model.eval()
-    test_loss = 0
-    outputs = []
-    targets = []
+    total_loss = 0.0
+    preds, trues = [], []
 
     with torch.no_grad():
-        for batch_idx, data in tqdm(
-            enumerate(test_loader), disable=not show, total=len(test_loader)
-        ):
-            data = data.to(device)
-            y = data.y
-
-            # Handle both model types - original and improved
+        for batch in tqdm(loader, disable=not show):
+            batch = batch.to(device)
+            y_true = batch.y.view(-1)
             if isinstance(model, ImprovedDeepTTG):
-                y_hat, _, _ = model(data)
+                y_pred, _, _ = model(batch)
+                y_pred = y_pred.view(-1)
             else:
-                y_hat = model(data)
+                y_pred = model(batch).view(-1)
 
-            test_loss += loss_function(y_hat.view(-1), y.view(-1)).item()
-            outputs.append(y_hat.cpu().numpy().reshape(-1))
-            targets.append(y.cpu().numpy().reshape(-1))
+            total_loss += loss_fn(y_pred, y_true).item()
+            preds.append(y_pred.cpu().numpy())
+            trues.append(y_true.cpu().numpy())
 
-    targets = np.concatenate(targets).reshape(-1)
-    outputs = np.concatenate(outputs).reshape(-1)
+    preds = np.concatenate(preds)
+    trues = np.concatenate(trues)
+    avg_loss = total_loss / len(loader.dataset)
 
-    test_loss /= len(test_loader.dataset)
-
-    evaluation = {
-        "loss": test_loss,
-        "c_index": metrics.c_index(targets, outputs),
-        "RMSE": metrics.RMSE(targets, outputs),
-        "MAE": metrics.MAE(targets, outputs),
-        "SD": metrics.SD(targets, outputs),
-        "CORR": metrics.CORR(targets, outputs),
+    return {
+        "loss": avg_loss,
+        "c_index": metrics.c_index(trues, preds),
+        "RMSE": metrics.RMSE(trues, preds),
+        "MAE": metrics.MAE(trues, preds),
+        "SD": metrics.SD(trues, preds),
+        "CORR": metrics.CORR(trues, preds),
     }
-
-    return evaluation
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test DeepTGIN models")
-    parser.add_argument(
-        "--model",
-        type=str,
-        choices=["original", "improved"],
-        default="improved",
-        help="Model type to evaluate",
-    )
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
-    parser.add_argument(
-        "--subset",
-        type=float,
-        default=0.8,
-        help="Fraction of dataset to use (for quick testing)",
-    )
-    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
-    parser.add_argument("--epochs", type=int, default=5, help="Number of epochs")
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Device to use",
-    )
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--model", choices=["original", "improved"], default="improved")
+    p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--subset", type=float, default=0.1, help="Fraction of data to use")
+    p.add_argument("--epochs", type=int, default=5)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    args = p.parse_args()
 
     device = torch.device(args.device)
-    print(f"Using device: {device}")
+    print(f"Device: {device}\n")
 
-    # Create data loaders with subset for quick testing
-    datasets = {}
-    data_loaders = {}
-
-    for phase_name in ["train", "val", "test2016", "test2013"]:
-        print(f"Loading {phase_name} dataset...")
-        dataset = TestbedDataset(root="data", dataset=phase_name)
-
-        # Create subset for quicker testing
+    # ─── Load data ───
+    loaders = {}
+    for split in ["train", "val", "test2016", "test2013"]:
+        print(f"Loading {split}.pt …")
+        ds = ProcessedDataset("data", split)
         if args.subset < 1.0:
-            subset = create_dataset_subset(dataset, fraction=args.subset)
-            print(f"Created subset of {len(subset)} samples from {len(dataset)} total")
-            datasets[phase_name] = subset
-        else:
-            datasets[phase_name] = dataset
-
-        data_loaders[phase_name] = DataLoader(
-            datasets[phase_name],
-            batch_size=args.batch_size,
-            pin_memory=True,
-            shuffle=(phase_name == "train"),
+            ds = create_dataset_subset(ds, args.subset)
+            print(f" • Subsample: {len(ds)} / {len(ProcessedDataset('data', split))}")
+        loaders[split] = DataLoader(
+            ds, batch_size=args.batch_size, shuffle=(split == "train"), pin_memory=True
         )
+    print()
 
-    # Initialize model based on selection
+    # ─── Model, Optimizer, Loss, AMP scaler ───
     if args.model == "original":
-        print("Using original DeepTTG model")
         model = DeepTTG().to(device)
     else:
-        print("Using improved ImprovedDeepTTG model")
         model = ImprovedDeepTTG().to(device)
 
-    # Loss function and optimizer
-    loss_fn = nn.MSELoss(reduction="sum")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-
-    # Gradient scaler for mixed precision
+    loss_fn = torch.nn.MSELoss(reduction="sum")
     scaler = GradScaler()
 
-    # Training loop
-    print(f"Starting training for {args.epochs} epochs")
+    # ─── Training ───
     for epoch in range(1, args.epochs + 1):
         model.train()
-        epoch_loss = 0
-
+        running_loss = 0.0
         print(f"Epoch {epoch}/{args.epochs}")
-        for batch_idx, data in enumerate(tqdm(data_loaders["train"], desc="Training")):
-            data = data.to(device)
+
+        for batch in tqdm(loaders["train"], desc="Training"):
+            batch = batch.to(device)
             optimizer.zero_grad()
 
             with autocast():
                 if args.model == "original":
-                    output = model(data)
-                    loss = loss_fn(output, data.y.view(-1, 1).float().to(device))
+                    y_pred = model(batch).view(-1)
                 else:
-                    output, _, _ = model(data)
-                    loss = loss_fn(output, data.y.view(-1, 1).float().to(device))
+                    y_pred, _, _ = model(batch)
+                    y_pred = y_pred.view(-1)
+                loss = loss_fn(y_pred, batch.y.view(-1))
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
-            epoch_loss += loss.item()
+            running_loss += loss.item()
 
-            # Print progress for larger batches
-            if (batch_idx + 1) % 10 == 0:
-                print(f"Batch {batch_idx+1}, Loss: {loss.item()/len(data):.6f}")
+        print(f" → Train loss: {running_loss/len(loaders['train'].dataset):.6f}")
+        val_metrics = test(model, loaders["val"], loss_fn, device)
+        print(f" → Val metrics: {val_metrics}\n")
 
-        # Report epoch loss
-        epoch_loss /= len(data_loaders["train"].dataset)
-        print(f"Epoch {epoch} training loss: {epoch_loss:.6f}")
+    # ─── Final Evaluation ───
+    print("=== FINAL EVALUATION ===")
+    for split in ["train", "val", "test2016", "test2013"]:
+        m = test(model, loaders[split], loss_fn, device)
+        print(f"{split}:", m)
 
-        # Evaluate on validation set
-        print("Evaluating on validation set...")
-        val_metrics = test(model, data_loaders["val"], loss_fn, device)
-        print(f"Validation metrics: {val_metrics}")
-
-    # Final evaluation on test sets
-    print("\n=== FINAL EVALUATION ===")
-    results = {}
-
-    for phase_name in ["train", "val", "test2016", "test2013"]:
-        print(f"\nEvaluating on {phase_name} set:")
-        performance = test(model, data_loaders[phase_name], loss_fn, device)
-        results[phase_name] = performance
-
-        print(f"{phase_name} results:")
-        for k, v in performance.items():
-            print(f"{k}: {v:.6f}")
-
-    # Save results to file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_dir = f"result/evaluation_{args.model}_{timestamp}"
-    os.makedirs(result_dir, exist_ok=True)
-
-    with open(f"{result_dir}/results.txt", "w") as f:
-        f.write(f"Model: {args.model}\n")
-        f.write(f"Subset fraction: {args.subset}\n")
-        f.write(f"Training epochs: {args.epochs}\n\n")
-
-        for phase_name, performance in results.items():
-            f.write(f"{phase_name}:\n")
-            for k, v in performance.items():
-                f.write(f"{k}: {v:.6f}\n")
+    # ─── Save results ───
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = f"result/eval_{args.model}_{ts}"
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "results.txt"), "w") as f:
+        f.write(
+            f"Model: {args.model}\nSubset: {args.subset}\nEpochs: {args.epochs}\n\n"
+        )
+        for split in ["train", "val", "test2016", "test2013"]:
+            perf = test(model, loaders[split], loss_fn, device)
+            f.write(f"{split}:\n")
+            for k, v in perf.items():
+                f.write(f"  {k}: {v:.6f}\n")
             f.write("\n")
 
-    print(f"\nResults saved to {result_dir}/results.txt")
+    print(f"\nResults written to {out}/results.txt")
 
 
 if __name__ == "__main__":
