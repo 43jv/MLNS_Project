@@ -1,36 +1,35 @@
-Model: improved
-Subset: 0.1
-Epochs: 5
+Model: improved2
 
 train:
-  loss: 4.225892
-  c_index: 0.713486
-  RMSE: 2.055697
-  MAE: 1.670671
-  SD: 1.457929
-  CORR: 0.625467
+loss: 0.427854
+c_index: 0.874824
+RMSE: 0.845731
+MAE: 0.643683
+SD: 0.832175
+CORR: 0.621605
+z
 
 val:
-  loss: 4.631916
-  c_index: 0.696215
-  RMSE: 2.152189
-  MAE: 1.737007
-  SD: 1.613720
-  CORR: 0.604280
+loss: 1.521413
+c_index: 0.765531
+RMSE: 1.287896
+MAE: 0.953140
+SD: 1.226486
+CORR: 0.592665
 
 test2016:
-  loss: 4.789067
-  c_index: 0.684350
-  RMSE: 2.188394
-  MAE: 1.771556
-  SD: 1.500928
-  CORR: 0.589851
+loss: 1.783478
+c_index: 0.809698
+RMSE: 1.339423
+MAE: 0.994263
+SD: 1.284123
+CORR: 0.565565
 
 test2013:
-  loss: 4.925988
-  c_index: 0.621053
-  RMSE: 2.219457
-  MAE: 1.866142
-  SD: 2.025648
-  CORR: 0.474009
+loss: 2.364237
+c_index: 0.715832
+RMSE: 1.361246
+MAE: 0.957107
+SD: 1.820910
+CORR: 0.665629
 
