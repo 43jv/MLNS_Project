@@ -1,4 +1,4 @@
-Model: improved2
+Model: improved3
 
 train:
 loss: 0.427854
@@ -7,7 +7,6 @@ RMSE: 0.845731
 MAE: 0.643683
 SD: 0.832175
 CORR: 0.621605
-z
 
 val:
 loss: 1.521413
